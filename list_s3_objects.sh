@@ -1,7 +1,7 @@
 #!/bin/bash
 
-radars=('KCYS' 'KRIW')
-years=$(seq 2007 2008)
+radars=('KRIW')
+years=$(seq 2017 2017)
 BUCKET_NAME="noaa-nexrad-level2"
 
 generate_dates() {
@@ -19,16 +19,17 @@ for radar in ${radars[@]}; do
     for year in ${years[@]}; do
         
         # spring
-        spring_start="${year}-03-01"
+        spring_start="${year}-03-0"
         spring_end="${year}-06-15"
         spring_dates=($(generate_dates $spring_start $spring_end))
         
         # fall period
         fall_start="${year}-08-15"
-        fall_end="${year}-11-30"
+        fall_end="${year}-12-01"
         fall_dates=($(generate_dates $fall_start $fall_end))
         
         # combine
+        #dates=("${fall_dates[@]}")
         dates=("${spring_dates[@]}" "${fall_dates[@]}")
         
         for date in "${dates[@]}"; do
@@ -38,7 +39,7 @@ for radar in ${radars[@]}; do
             s3_date=$(echo "$date" | sed 's/-/\//g')
             s3_path="s3://${BUCKET_NAME}/${s3_date}/${radar}/"
             aws s3 ls --no-sign-request "$s3_path" | \
-            awk '{print $4}' | grep '.gz$' | \
+            awk '{print $4}' | \
             parallel -j 0 -k echo | python script.py
         done
     done

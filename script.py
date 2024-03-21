@@ -37,7 +37,7 @@ def process_line(line):
     """Process each line received from the Bash script."""
     logging.info(f"Processing line: {line.strip()}")
     filename = line.strip()
-    if not filename or not filename.endswith('.gz'):
+    if not filename:
         logging.debug("Received non-gz file or empty line, skipping: %s", filename)
         return
     
