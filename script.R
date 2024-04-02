@@ -5,6 +5,7 @@ library(vol2birdR)
 setwd("~/clo/bigbird/wgfd")
 
 ---
+
 #helper functions
 
 clean_pvol <- function(my_pvol) {
@@ -29,23 +30,32 @@ clean_pvol <- function(my_pvol) {
   return(my_pvol)
 }
 
+
 ---
 #test single week
 
-closest_times <- read.csv("pvol/KRIW_closest_times.csv")
+
+radar = "KRIW"
+year = 2019
+wn = 23
+
+closest_times <- read.csv(paste0("pvol/", radar, "_closest_times.csv"))
 df_filtered <- subset(closest_times, closest_file != "")
 
 unique_year_week_df <- unique(data.frame(year = closest_times$year, week = closest_times$week))
 unique_year_week_list <- split(unique_year_week_df, seq(nrow(unique_year_week_df)))
-filtered_list <- Filter(function(x) x$year == 2007, unique_year_week_list)
+filtered_list <- Filter(function(x) x$year == year, unique_year_week_list)
 
-df_subset = subset(closest_times, year == filtered_list[[22]]$year & week == filtered_list[[22]]$week)
+
+df_subset = subset(closest_times, year == filtered_list[[wn]]$year & week == filtered_list[[wn]]$week & closest_file != '')
 df_subset$closest_file <- gsub("_MDM", "", df_subset$closest_file)
+
 
 ----
 #time full script
 
 start_time <- Sys.time()
+occult= read_pvolfile('occult/h5-150km/KRIW/12/KRIW.h5', param='all')
 
 ppi_list = list()
 generate_ppis <- function(closest_file) {
@@ -58,6 +68,24 @@ generate_ppis <- function(closest_file) {
   apply_mistnet(input_pvol_path) -> my_pvol
   my_pvol = clean_pvol(my_pvol)
 
+  blockage_threshold <- 0.1
+  num_scans_to_process <- min(length(occult$scans), length(my_pvol$scans))
+
+  for(scan_idx in 1:num_scans_to_process) {
+
+    occult_data <- occult$scans[[scan_idx]]$params$OCCULT
+    class(occult_data) <- "matrix"
+    blockage_mask <- occult_data > blockage_threshold
+
+    for(param_name in names(my_pvol$scans[[scan_idx]]$params)) {
+      param_data <- my_pvol$scans[[scan_idx]]$params[[param_name]]
+      class(param_data) <- "matrix"
+      param_data[blockage_mask] <- NA
+      class(param_data) <- c("param", "matrix", "array")
+      my_pvol$scans[[scan_idx]]$params[[param_name]] <- param_data
+    }
+  }
+
   my_ppi = integrate_to_ppi(my_pvol, my_vp, res = 250, xlim = c(-100000, 100000), ylim = c(-100000, 100000))
   ppi_list <<- c(ppi_list, list(my_ppi))
 }
@@ -65,31 +93,41 @@ generate_ppis <- function(closest_file) {
 lapply(df_subset$closest_file, generate_ppis)
 my_composite = composite_ppi(ppi_list, param = "VID", method = "mean", res=250)
 
+output_png_file <- paste0("plots/vid/",radar,"/corrected/",
+                          radar, "_",
+                          paste(filtered_list[[wn]]$year,
+                                filtered_list[[wn]]$week, sep="_"),
+                          ".png")
+
+# Open a PNG device
+png(filename=output_png_file, width=800, height=600)
+print(plot(my_composite))
+dev.off()
+
 r <- rast(my_composite$data)
 
-output_tif_file <- paste0("tif/KRIW/",
+output_tif_file <- paste0("tif/", radar, "/",
                           radar, "_",
-                          paste(filtered_list[[22]]$year,
-                                filtered_list[[22]]$week, sep="_"),
+                          paste(filtered_list[[wn]]$year,
+                                filtered_list[[wn]]$week, sep="_"),
                           ".tif")
 
 terra::writeRaster(r, output_tif_file, overwrite=TRUE)
-
 end_time <- Sys.time()
 
 ---
 #process vp
 
-file_dir <- "/Users/at744/clo/bigbird/wgfd/pvol/KRIW"
-output_dir <- "/Users/at744/clo/bigbird/wgfd/vp/KRIW"
-radar <- "KRIW"
-
-files <- list.files(file_dir, pattern = "KRIW2007", full.names = TRUE)
+year = 2019
+radar <- "KCYS"
+file_dir <- paste("/Users/at744/clo/bigbird/wgfd/pvol/", radar, sep="")
+output_dir <- paste("/Users/at744/clo/bigbird/wgfd/vp/", radar, sep="")
+files <- list.files(file_dir, pattern = paste0("KCYS", year), full.names = TRUE)
 
 for (file in files) {
   message("Processing file: ", file)
 
-  output_file <- paste0(output_dir, "/", gsub(".*(KRIW2007.+)$", "\\1.h5",  basename(tools::file_path_sans_ext(file))))
+  output_file <- paste0(output_dir, "/", gsub(".*(KCYS2019.+)$", "\\1.h5",  basename(tools::file_path_sans_ext(file))))
 
   config <- vol2bird_config()
   config$clutterMap <- paste('/Users/at744/clo/bitbucket/birdcast/is-birdcast-observed-profile/occult/', radar, ".h5", sep = "")
