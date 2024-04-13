@@ -8,12 +8,15 @@ import os
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 os.environ['AWS_REGION'] = 'us-east-1'
-profile_name = 'sso-admin'
 
-session = Session(profile_name=profile_name)
+#profile_name = 'sso-admin'
+#session = Session(profile_name=profile_name)
 
-dynamodb = session.resource('dynamodb',  region_name='us-east-1')
-s3_client = session.client('s3', region_name='us-east-1')
+#dynamodb = session.resource('dynamodb',  region_name='us-east-1')
+#s3_client = session.client('s3', region_name='us-east-1')
+
+dynamodb = boto3.resource('dynamodb', region_name=os.environ['AWS_REGION'])
+s3_client = boto3.client('s3', region_name=os.environ['AWS_REGION'])
 
 DYNAMO_DB_TABLE_NAME = 'radar_profile'
 table = dynamodb.Table(DYNAMO_DB_TABLE_NAME)

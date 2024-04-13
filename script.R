@@ -4,6 +4,8 @@ library(stringr)
 library(vol2birdR)
 library(logger)
 library(parallel)
+library(tidyr)
+library(vioplot)
 setwd("~/clo/bigbird/wgfd")
 
 ---
@@ -13,18 +15,18 @@ setwd("~/clo/bigbird/wgfd")
 clean_pvol <- function(my_pvol) {
 
   #filter out non-mistnet scans
-  my_pvol$scans <- Filter(function(scan) "BIOLOGY" %in% names(scan$params), my_pvol$scans)
+  my_pvol$scans <- Filter(function(scan) "WEATHER" %in% names(scan$params), my_pvol$scans)
   for (i in seq_along(my_pvol$scans)) {
     # For each scan, extract CELL and DBZH parameters
-    cell <- my_pvol$scans[[i]]$params$CELL
+    weather <- my_pvol$scans[[i]]$params$WEATHER
     dbzh <- my_pvol$scans[[i]]$params$DBZH
     param_attrs <- attributes(dbzh)
 
-    class(cell) <- "matrix"
+    class(weather) <- "matrix"
     class(dbzh) <- "matrix"
 
     # Set DBZH values to NA where CELL >= 1
-    dbzh[cell >= 1] <- NA
+    dbzh[weather > 0.45] <- NA
 
     # Restore original class of dbzh and update the pvol object
     class(dbzh) <- c("param", "matrix", "array")
@@ -33,6 +35,7 @@ clean_pvol <- function(my_pvol) {
   }
   return(my_pvol)
 }
+
 
 get_elevation_angles <- function(pvol) {
   sapply(pvol$scans, function(scan) scan$attributes$where$elangle)
@@ -242,16 +245,18 @@ radar <- "KCYS"
 year_start = 2013
 year_end = 2013
 year_pattern <- paste0(radar, "(", paste(year_start:year_end, collapse="|"), ")")
-file_dir <- paste("/Users/at744/clo/bigbird/wgfd/pvol/", radar, sep="")
-output_dir <- paste("/Users/at744/clo/bigbird/wgfd/vp/", radar, sep="")
-files <- list.files(file_dir, pattern = year_pattern, full.names = TRUE)
+file_dir <- "/Users/at744/clo/bigbird/wgfd/pvol/biofree/KRIW/raw"
+output_dir <- "/Users/at744/clo/bigbird/wgfd/pvol/biofree/KRIW/mistnet_clean"
+files <- list.files(file_dir, full.names = TRUE)
 
 
 for (file in files) {
   message("Processing file: ", file)
-  pattern <- paste0(".*(", radar, year, ".+)$")
-  output_file <- paste0(output_dir, "/", gsub(pattern, "\\1.h5", basename(tools::file_path_sans_ext(file))))
-
+  
+  filename = basename(tools::file_path_sans_ext(file))
+  output_file <- paste0(output_dir, filename, '.csv')
+  radar = substr(filename, 1, 4)
+  
   config <- vol2bird_config()
   config$clutterMap <- paste('/Users/at744/clo/bitbucket/birdcast/is-birdcast-observed-profile/occult/', radar, ".h5", sep = "")
   config$useClutterMap <- TRUE
@@ -261,9 +266,7 @@ for (file in files) {
   config$layerThickness <- 100
   config$maxNyquistDealias <- 50
   config$stdDevMinBird <- 1
-
   vol2bird(file = file, output_file, config = config)
-
   message("Output saved to: ", output_file)
 }
 
@@ -271,7 +274,8 @@ process_file <- function(file, radar, output_dir) {
 
   filename <- basename(tools::file_path_sans_ext(file))
   message("Processing file: ", file)
-  output_file <- paste0(output_dir, "/", filename, ".h5")
+  radar = substr(filename, 1, 4)
+  output_file <- paste0(output_dir, "/", filename, ".csv")
 
   config <- vol2bird_config()
   config$clutterMap <- paste0('/Users/at744/clo/bitbucket/birdcast/is-birdcast-observed-profile/occult/', radar, ".h5")
@@ -283,9 +287,13 @@ process_file <- function(file, radar, output_dir) {
   config$maxNyquistDealias <- 50
   config$stdDevMinBird <- 1
 
-  # Execute vol2bird
-  vol2bird(file = file, output_file, config = config)
-  message("Output saved to: ", output_file)
+  # Execute vol2bird inside tryCatch to handle potential errors
+  tryCatch({
+    vol2bird(file = file, output_file, config = config)
+    message("Output saved to: ", output_file)
+  }, error = function(e) {
+    message("Error processing file ", file, ": ", e$message)
+  })
 }
 
 numCores <- 10
@@ -298,7 +306,244 @@ clusterEvalQ(cl, {
 
 parLapply(cl, sample(files), function(file) process_file(file, radar, output_dir))
 
+file_dir <- "/Users/at744/clo/bigbird/wgfd/pvol/additional4"
+
+output_files <- basename(tools::file_path_sans_ext(list.files(output_dir, full.names = TRUE)))
+input_files <- basename(tools::file_path_sans_ext(list.files(file_dir, full.names = TRUE)))
+files <- list.files(file_dir, full.names = TRUE)
+
+
+#Undefined error: 0
+"/Users/at744/clo/bigbird/wgfd/pvol/eclipse/KRGX20240407_183101_V06"
+"/Users/at744/clo/bigbird/wgfd/pvol/eclipse/KHDX20240407_191228_V06"
+"/Users/at744/clo/bigbird/wgfd/pvol/eclipse/KPUX20240406_184953_V06"
+
+full_paths <- paste0("/Users/at744/clo/bigbird/wgfd/pvol/eclipse/", missing_files)
 ---
+  
+radar_obscuration = read.csv("new_radar_obscuration2.csv")
+radar_obscuration = radar_obscuration[radar_obscuration$closest_file != '',]
+radar_obscuration$closest_file_path =  paste0("/Users/at744/clo/bigbird/wgfd/vp/eclipse/", radar_obscuration$closest_file, '.csv')
+
+file_paths <- radar_obscuration$closest_file_path
+files_exist <- file.exists(file_paths)
+missing_files <- file_paths[!files_exist]
+
+# Function to transform the file path into the desired S3 path format
+transform_to_s3_path <- function(file_path) {
+  # Extract the file name without the directory path and extension
+  file_name <- tools::file_path_sans_ext(basename(file_path))
+  
+  # Extract the date and radar from the file name
+  radar <- substr(file_name, 1, 4)
+  year <- substr(file_name, 5, 8)
+  month <- substr(file_name, 9, 10)
+  day <- substr(file_name, 11, 12)
+  
+  # Construct the S3 path
+  s3_path <- paste(year, month, day, radar, file_name, sep="/")
+  
+  return(s3_path)
+}
+
+# Apply the transformation to each file path
+s3_paths <- sapply(missing_files, transform_to_s3_path)
+
+# Create a dataframe with the resulting S3 paths
+s3_paths_df <- data.frame(s3_path = s3_paths)
+
+# Print the dataframe
+print(s3_paths_df)
+
+radar_obscuration = read.csv("new_radar_obscuration.csv")
+radar_obscuration = radar_obscuration[radar_obscuration$closest_file != '',]
+radar_obscuration$closest_file_path =  paste0("/Users/at744/clo/bigbird/wgfd/vp/eclipse/", radar_obscuration$closest_file, '.csv')
+radar_obscuration$timestamp <- as.POSIXct(radar_obscuration$timestamp, tz = "UTC")
+radar_obscuration$date <- as.Date(radar_obscuration$timestamp, tz = "UTC")
+
+my_vpts = read_vpts("/Users/at744/clo/bigbird/wgfd/vp/eclipse/KABR20240407_165720_V06.csv")
+
+required_features = colnames(example_vp$data)
+vpts_to_vp <- function(my_vpts, required_features) {
+  
+  # Check if my_vpts is of class "vpts"
+  if (!is.vpts(my_vpts)) {
+    stop("The provided object is not of class 'vpts'.")
+  }
+  
+  # Check required features
+  required_features <- colnames(example_vp$data)
+  if (length(setdiff(required_features, colnames(as.data.frame(my_vpts)))) != 0) {
+    stop("The provided my_vpts doesn't have all required features.")
+  }
+  
+  # Ensure non-null components
+  if (is.null(my_vpts$radar) || is.null(my_vpts$datetime) || is.null(my_vpts$attributes)) {
+    stop("radar, datetime, or attributes in my_vpts are NULL.")
+  }
+  
+  # Construct the object
+  my_vp <- list(
+    data = as.data.frame(my_vpts),
+    radar = my_vpts$radar,
+    datetime = my_vpts$datetime,
+    attributes = my_vpts$attributes
+  )
+  
+  # Assign class vp
+  class(my_vp) <- "vp"
+  
+  return(my_vp)
+}
+
+  
+
+my_vpts = read_vpts(closest_file_path)
+my_vp = vpts_to_vp(my_vpts)
+my_integrated_vp = integrate_profile(my_vp)
+my_integrated_vp$vir
+
+# Define the function to process each file
+process_file <- function(row) {
+  if (file.exists(row$closest_file_path)) {
+    my_vpts <- read_vpts(row$closest_file_path)
+    my_vp <- vpts_to_vp(my_vpts)
+    my_integrated_vp <- integrate_profile(my_vp)
+    
+    # Return a list or data frame containing both vir and minutes_from_eclipse
+    return(data.frame(vir = my_integrated_vp$vir, minutes_from_eclipse = row$minutes_from_eclipse))
+  }
+  # Return NULL or an empty data frame if the condition is not met
+  return(data.frame(vir = NA, minutes_from_eclipse = row$minutes_from_eclipse))
+}
+
+numCores <- 10
+cl <- makeCluster(numCores)
+clusterExport(cl, c("read_vpts", "vpts_to_vp", "integrate_profile"))
+clusterEvalQ(cl, {
+  library(dplyr)
+  library(bioRad)
+})
+
+
+radar_obscuration = read.csv("eclipse_day.csv")
+
+radar_obscuration = radar_obscuration[radar_obscuration$closest_file != '',]
+radar_obscuration = radar_obscuration[radar_obscuration$radar == 'KPAH',]
+radar_obscuration$closest_file_path =  paste0("/Users/at744/clo/bigbird/wgfd/vp/eclipse/", radar_obscuration$closest_file, '.csv')
+radar_obscuration$timestamp <- as.POSIXct(radar_obscuration$timestamp, tz = "UTC")
+radar_obscuration$date <- as.Date(radar_obscuration$timestamp, tz = "UTC")
+
+radar_obscuration_subset = radar_obscuration
+#radar_obscuration_subset = radar_obscuration[radar_obscuration$max_percent < 80,]
+#radar_obscuration_subset = radar_obscuration[radar_obscuration$max_percent >= 80 & radar_obscuration$max_percent < 95,]
+#radar_obscuration_subset = radar_obscuration[radar_obscuration$max_percent >= 95,]
+#radar_obscuration_subset = radar_obscuration[radar_obscuration$max_percent == 100,]
+
+radar_obscuration_list <- split(radar_obscuration_subset, seq(nrow(radar_obscuration_subset)))
+results <- parLapply(cl, radar_obscuration_list, process_file)
+vir_data_frame <- as.data.frame(do.call(rbind, results))
+vir_data_frame$minutes_from_eclipse <- as.numeric(as.integer(as.character(vir_data_frame$minutes_from_eclipse)))
+
+#vir_data_frame_80 <- vir_data_frame
+#vir_data_frame_80_95 <- vir_data_frame
+#vir_data_frame_95 <- vir_data_frame
+#vir_data_frame_100 <- vir_data_frame
+
+vir_data_frame_80$vir <- as.numeric(unlist(vir_data_frame_80$vir))
+vir_data_frame_80_95$vir <- as.numeric(unlist(vir_data_frame_80_95$vir))
+vir_data_frame_95$vir <- as.numeric(unlist(vir_data_frame_95$vir))
+vir_data_frame_100$vir <- as.numeric(unlist(vir_data_frame_100$vir))
+
+
+library(mgcv)
+
+
+colors <- c("<80%" = "#E5E455", "80−95%" = "#848151", "95−100%" = "#4D4D4D")
+
+vir_data_frame_2017 
+vir_data_frame_2024 
+
+p <- ggplot() +
+  #geom_smooth(data = vir_data_frame_80, aes(x = minutes_from_eclipse, y = vir, color = "<80%"), method = 'gam', formula = y ~ s(x, bs = "cs"), size = 1) +
+  #geom_smooth(data = vir_data_frame_80_95, aes(x = minutes_from_eclipse, y = vir, color = "80−95%"), method = 'gam', formula = y ~ s(x, bs = "cs"), size = 1) +
+  #geom_smooth(data = vir_data_frame_95, aes(x = minutes_from_eclipse, y = vir, color = "95−100%"), method = 'gam', formula = y ~ s(x, bs = "cs"), size = 1) +
+  geom_smooth(data = vir_data_frame, aes(x = minutes_from_eclipse, y = vir, color = "black"), method = 'gam', formula = y ~ s(x, bs = "cs"), size = 1) +
+  geom_vline(xintercept = 0, color = "red", linetype = "solid", size = 0.25) +
+  scale_color_manual(values = colors, name = "obscuration") +
+  labs(
+    x = "minutes from sunset",
+    y = expression(VIR ~ cm^2 ~ km^-2),
+    title = "Aug 21 2017 KPAH"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(size = 0.5),  # Half as thick axis lines
+    axis.ticks = element_line(color = "black", size = 0.5),  # Half as thick tick marks
+    axis.ticks.length = unit(0.125, "cm")  # Adjust tick mark length if necessary
+  ) + coord_cartesian(xlim=c(-120, 120)) + 
+  coord_cartesian(ylim = c(0, 600))
+
+
+ggsave("high_res_plot_aug_21_KPAH.png", plot = p, width = 10, height = 6, dpi = 300, bg='white')
+
+ggplot(vir_data_frame_80, aes(x = minutes_from_eclipse, y = vir)) +
+  geom_vline(xintercept = 0, color = "red", linetype = "solid", size = 0.5) + 
+  geom_smooth(method = 'gam', formula = y ~ s(x, bs = "cs"), color = "black", size = 1) +
+  labs(
+    x = "Minutes from 'eclipse' maximum",
+    y = expression(VIR ~ cm^2 ~ km^-2),
+    title = "Apr 8 2024"
+  ) +
+  theme_minimal() +
+  theme(panel.border = element_blank()
+        ,panel.grid.major = element_blank()
+        ,panel.grid.minor = element_blank()
+        ,axis.line = element_line()
+  )
+
+
+
+base_plot <- ggplot() +
+  geom_vline(xintercept = 0, color = "red", linetype = "solid", size = 0.25) +
+  scale_color_manual(values = c("black"), name = "obscuration") +
+  labs(
+    x = "minutes from sunset",
+    y = expression(VIR ~ cm^2 ~ km^-2)
+  ) +
+  theme_minimal() +
+  theme(
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(size = 0.5),
+    axis.ticks = element_line(color = "black", size = 0.5),
+    axis.ticks.length = unit(0.125, "cm")
+  ) +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim=c(-120, 120), ylim = c(0, 600))
+
+plot_2017 <- base_plot +
+  geom_smooth(data = vir_data_frame_2017, aes(x = minutes_from_eclipse, y = vir, color = "Year 2017"), method = 'gam', formula = y ~ s(x, bs = "cs"), size = 1) +
+  labs(title = "Aug 21 2017 KPAH")
+
+# Plot for 2024
+plot_2024 <- base_plot +
+  geom_smooth(data = vir_data_frame_2024, aes(x = minutes_from_eclipse, y = vir, color = "Year 2024"), method = 'gam', formula = y ~ s(x, bs = "cs"), size = 1) +
+  labs(title = "Apr 8 2024 KPAH")
+
+# Arrange plots side by side
+grid.arrange(plot_2017, plot_2024, ncol = 2)
+
+arranged_plots <- arrangeGrob(plot_2017, plot_2024, ncol = 2)
+
+# Now use ggsave to save the arranged plot to a PNG file
+ggsave("KPAH.png", plot = arranged_plots, width = 16, height = 8, dpi = 300)
+
+
 
 #construct subtraction rasters
 
@@ -310,59 +555,125 @@ elevation_angles_vector <- sapply(cleaned_pvols, function(pvol) {
 })
 
 
-pvol_dir <- 'pvol/biofree/KRIW'
-pvol_files <- list.files(pvol_dir, full.names = TRUE)[1:100]
+file_dir <- "/Users/at744/clo/bigbird/wgfd/pvol/biofree/KRIW/raw"
+output_dir <- "/Users/at744/clo/bigbird/wgfd/pvol/biofree/KRIW/mistnet_clean/"
+files <- list.files(file_dir, full.names = TRUE)
+
 
 process_pvol <- function(file_path) {
   tryCatch({
-    apply_mistnet(file_path) %>%
-      clean_pvol()
+    
+    #output_dir_raster <- "/Users/at744/clo/bigbird/wgfd/pvol/biofree/KRIW/raster/"
+    #output_dir_image <- "/Users/at744/clo/bigbird/wgfd/pvol/biofree/KRIW/image/"
+    filename = basename(tools::file_path_sans_ext(file_path))
+    my_pvol <- apply_mistnet(file_path) %>% clean_pvol()
+    
+    #my_param <- get_param(my_pvol$scans[[1]], 'DBZH')
+    #my_ppi <- project_as_ppi(my_param, range_max = 100000)
+    #my_raster <- rast(my_ppi$data)
+    #writeRaster(my_raster, filename = paste0(output_dir_raster, filename,".tif"), overwrite=TRUE)
+    
+    #raster_df = as.data.frame(my_raster, xy=TRUE) %>% na.omit()
+    # p <- (
+    #   ggplot(data = raster_df) +
+    #     geom_raster(aes(x = x, y = y, fill=DBZH)) +
+    #     scale_fill_viridis_c(limit = c(-35, 55)) +
+    #     theme_void() +
+    #     theme(
+    #       panel.background = element_rect(fill = 'black'),
+    #       plot.background = element_rect(fill = "black"),
+    #       legend.position = "bottom",
+    #       legend.text = element_text(color = "#E4EBF7"),  # Set legend text color
+    #       legend.title = element_text(color = "#E4EBF7"),  # Set legend title color
+    #     )
+    # )
+    # 
+   # ggsave(filename = paste0(output_dir_image, filename, ".png"), plot = p, width = 10, height = 8, dpi = 300)
+    
   }, error = function(e) {
     message("Error processing file: ", file_path, "\nError message: ", e$message)
     return(NULL)  # Return NULL for this file to indicate the error
   })
+  return(my_pvol)
 }
+
 
 numCores <- 10
 cl <- makeCluster(numCores)
-clusterExport(cl, varlist = c("process_pvol", "apply_mistnet", "clean_pvol"))
+clusterExport(cl, varlist = c("process_pvol", "clean_pvol", "apply_mistnet",
+                              "get_param", "project_as_ppi", "rast", "writeRaster",
+                              "ggplot", "ggsave", "scale_fill_viridis_c", "theme",
+                              "element_text","element_rect", "geom_raster",
+                              "theme_void", "aes" ,"ggsave"))
 clusterEvalQ(cl, {
   library(dplyr)
   library(bioRad)
+  library(terra)
+  library(magrittr)
+  library(ggplot2)
 })
+
+file_path <- files[1]
+
+parLapply(cl, files, process_pvol)
+lapply(files[1], process_pvol)
+
+raster_df = as.data.frame(my_raster, xy=TRUE) %>% na.omit()
+
+  (
+    ggplot(data = raster_df) +
+      geom_raster(aes(x = x, y = y, fill=DBZH)) +
+      scale_fill_viridis_c() +
+      theme_void() +
+      theme(
+        panel.background = element_rect(fill = 'black'),
+        plot.background = element_rect(fill = "black"),
+        legend.position = "bottom",
+        legend.text = element_text(color = "#E4EBF7"),  # Set legend text color
+        legend.title = element_text(color = "#E4EBF7"),  # Set legend title color
+      )
+  )
 
 
 raster_list = list()
 
-pvol_dir <- 'pvol/biofree/KRIW'
+pvol_dir <- 'pvol/biofree/KRIW/raw'
 all_pvol_files <- setdiff(list.files(pvol_dir, full.names = TRUE), list.dirs(pvol_dir, recursive = FALSE, full.names = TRUE))
 num_files <- length(all_pvol_files)
-target_param = 'VRADH'
+target_params = c('DBZH', 'VRADH', 'RHOHV','PHIDP')
 
 # Loop through files in chunks of 100, starting from 101 to the end
 for (start_idx in seq(0, num_files, by = 100)) {
   end_idx <- min(start_idx + 99, num_files) # Ensure we don't go beyond the array length
   pvol_files <- all_pvol_files[start_idx:end_idx]
-
-  # Process each chunk of files
+  
   cleaned_pvols <- parLapply(cl, pvol_files, process_pvol)
-
+  
   for (i in seq_along(cleaned_pvols)) {
-    param <- cleaned_pvols[[i]]$scans[[1]]$params[[target_param]]
-    if (!is.null(param) && all(dim(param) == c(1201, 720))) {
-      class(param) <- "matrix"
-      raster_list[[length(raster_list) + 1]] <- rast(param) # Append new raster to the list
+    layers = list()
+    for (target_param in target_params) {
+      param <- cleaned_pvols[[i]]$scans[[1]]$params[[target_param]]
+      if (!is.null(param) && all(dim(param) == c(1201, 720))) {
+        class(param) <- "matrix"
+        layers[[length(layers) + 1]] <- rast(param) 
+      }
+    }
+    
+    if (length(layers) == length(target_params)) {
+      combined_raster <- terra::rast(layers)
+      names(combined_raster) <- target_params
+      raster_list[[length(raster_list) + 1]] <- combined_raster
     }
   }
-
-  # Optionally clear cleaned_pvols to free memory
+  
   rm(cleaned_pvols)
-  gc() # Garbage collection
+  gc() 
 }
 
 
-cleaned_pvols <- parLapply(cl, pvol_files, process_pvol)
-raster_list <- list()
+
+#cleaned_pvols <- parLapply(cl, pvol_files, process_pvol)
+#raster_list <- list()
 
 for (i in seq_along(cleaned_pvols)) {
   dbzh = cleaned_pvols[[i]]$scans[[1]]$params$DBZH
@@ -376,27 +687,221 @@ rm(cleaned_pvols)
 gc()
 
 
-stacked_raster <- rast(raster_list)
-median_raster <- app(stacked_raster, fun = median, na.rm = TRUE)
-count_non_na <- function(x) {
-  sum(!is.na(x))
+--------
+
+lat = radarInfo[radarInfo$radar == 'KRIW',]$lat
+lon = radarInfo[radarInfo$radar == 'KRIW',]$lon
+proj4string_az =paste("+proj=aeqd +lat_0=",lat," +lon_0=",lon," +ellps=WGS84 +datum=WGS84 +units=m +no_defs",sep="")
+
+dem_raster = brick("gis/elev/elev48i0100a.tif")
+lower48_sf_transformed = sf::st_transform(lower48_sf, sf::st_crs(crs(dem_raster)))
+wyoming_sf= lower48_sf_transformed[lower48_sf_transformed$name == 'Wyoming',]
+
+# Crop the DEM using the extent of Wyoming
+wyoming_extent <- sf::st_bbox(wyoming_sf)
+wyoming_dem <- crop(dem_raster, wyoming_extent)
+
+#Trasnform Wyoming DEM
+dem_stars <- st_as_stars(wyoming_dem)
+dem_transformed <- st_transform(dem_stars, crs = proj4string_az)
+
+
+ggplot() + geom_stars(data = dem_transformed)
+
+
+
+
+
+-------
+
+dbzh_layers = list()
+vradh_layers = list()# Assuming you have a raster_list with DBZH, VRADH, and RHOHV layers
+rhohv_layers = list()
+
+# Extract individual layers and add them to respective lists
+for (raster in raster_list) {
+  dbzh_layers[[length(dbzh_layers) + 1]] <- raster[["DBZH"]]
+  vradh_layers[[length(vradh_layers) + 1]] <- raster[["VRADH"]]
+  rhohv_layers[[length(rhohv_layers) + 1]] <- raster[["RHOHV"]]
 }
 
-count_raster <- app(stacked_raster, fun = count_non_na)
+dbzh_stack <- terra::rast(dbzh_layers)
+vradh_stack <- terra::rast(vradh_layers)
+rhohv_stack <- terra::rast(rhohv_layers)
 
-count_values <- values(count_raster)
-median_values <- values(median_raster)
-threshold = 250
+median_with_threshold <- function(x) {
+  if (sum(!is.na(x)) >= 100) {
+    return(median(x, na.rm = TRUE))
+  } else {
+    return(NA)
+  }
+}
+
+dbzh_stack_agg_mean = aggregate(dbzh_stack, fact = 4, fun = "mean")
+#vradh_stack_agg_mean = aggregate(vradh_stack, fact = 4, fun = "mean")
+#rhohv_stack_agg_mean = aggregate(rhohv_stack, fact = 3, fun = "mean")
+
+dbzh_median_raster <- app(dbzh_stack_agg_mean, fun = median_with_threshold)
+#vradh_median_raster <- app(vradh_stack_agg_mean, fun = median_with_threshold)
+#rhohv_median_raster <- app(rhohv_stack_agg_mean, fun = median_with_threshold)
+
+probability_echo_not_na <- function(x) {
+  prob_not_na = sum(!is.na(x)) / length(x)
+  return(prob_not_na)
+}
+
+dbzh_prob_echo_raster <- app(dbzh_stack_agg_mean, fun = probability_echo_not_na)
+#vradh_prob_echo_raster <- app(vradh_stack_agg_mean, fun = probability_echo_not_na)
+#rhohv_prob_echo_raster <- app(rhohv_stack_agg_mean, fun = probability_echo_not_na)
+
+--------
+combined_median_raster <- c(dbzh_median_raster, vradh_median_raster, rhohv_median_raster)
+m <- any(is.na(combined_median_raster))
+x <- mask(combined_median_raster, m, maskvalue=1)
+
+dbzh_median_raster_masked = mask(dbzh_median_raster, m, maskvalue=1)
+vradh_median_raster_masked = mask(vradh_median_raster, m, maskvalue=1)
+rhohv_median_raster_masked = mask(rhohv_median_raster, m, maskvalue=1)
+--------
+
+combined_median_raster <- c(dbzh_median_raster, vradh_median_raster)
+m <- any(is.na(dbzh_median_raster))
+
+dbzh_median_raster_masked = mask(dbzh_median_raster, m, maskvalue=1)
+vradh_median_raster_masked = mask(vradh_median_raster, m, maskvalue=1)
+
+dbzh_median_values <- values(dbzh_median_raster_masked)
+vradh_median_values <- values(vradh_median_raster_masked)
+valid_values_df <- data.frame(dbzh = dbzh_median_values, vradh=vradh_median_values)
+valid_values_df <- na.omit(valid_values_df)
+colnames(valid_values_df) <- c('dbzh', 'vradh')
+
+
+m <- any(is.na(dbzh_median_raster))
+dbzh_prob_echo_raster_masked <- mask(dbzh_prob_echo_raster, m, maskvalue=1)
+dbzh_median_raster_masked = mask(dbzh_median_raster, m, maskvalue=1)
+dbzh_median_values <- values(dbzh_median_raster_masked)
+dbzh_prob_echo_values <- values(dbzh_prob_echo_raster_masked)
+
+valid_values_df <- data.frame(median = dbzh_median_values, prob_echo=dbzh_prob_echo_values)
+valid_values_df <- na.omit(valid_values_df)
+colnames(valid_values_df) <- c('median', 'prob')
+
+
+eps = 0.5
+minPts = 5
+
+# Performing DBSCAN
+dbscan_result = dbscan(valid_values_df, eps = eps, minPts = minPts)
+
+# Adding cluster assignments to the dataframe
+valid_values_df$cluster = dbscan_result$cluster
+
+
+ggplot(valid_values_df, aes(x = median, y = prob)) +
+  geom_point(alpha = 0.05) +  # Use alpha to make points semi-transparent if there's overplotting
+  labs(x = "Median DBZH", y = "Probability of Echo", title = "Median DBZH vs. Probability of Echo") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),  # Center the plot title
+    plot.background = element_rect(fill = "white", color = NA),  # White background
+    panel.background = element_rect(fill = "white", color = NA)  # White panel background
+  )
+
+
+for (k in 1:10) {
+  set.seed(123)  # Set seed for reproducibility
+  clusters <- kmeans(valid_values_df, centers = k, nstart = 20)
+  wss[k] <- clusters$tot.withinss
+}
+
+# Plot the WSS for each k to visualize the elbow method
+plot(1:10, wss, type = "b", xlab = "Number of Clusters", ylab = "Within-Cluster Sum of Squares",
+     main = "Elbow Method for Choosing k")
+
+k=3
+clusters_kmeans <- kmeans(valid_values_df, centers = k, nstart = 20)
+valid_values_df$cluster <- clusters_kmeans$cluster
+
+ggplot(valid_values_df, aes(x = median, y = prob, color = factor(cluster))) +
+  geom_point(alpha = 0.5) +
+  scale_color_viridis_d(name = "Cluster") + # Corrected for discrete data
+  labs(x = "Median DBZH", y = "Probability of Echo", title = "K-means Clustering of Median DBZH vs. Probability of Echo") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    legend.position = "right"
+  )
+
+# Plotting
+ggplot(valid_values_df, aes(x = median, y = prob, color = factor(cluster))) +
+  geom_point(alpha = 0.5) +
+  scale_color_viridis_d(name = "Cluster") + # For discrete data
+  labs(x = "Median DBZH", y = "Probability of Echo", title = "DBSCAN Clustering of Median DBZH vs. Probability of Echo") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    legend.position = "right"
+  )
+
+
+
+
+
+
+
+
+
+raster_df = as.data.frame(rhohv_median_raster, xy=TRUE) %>% na.omit()
+p <- ggplot(data = raster_df, aes(x = x, y = y, fill = lyr.1)) +
+  geom_raster() +
+  scale_fill_viridis_c() +
+  theme_void() + 
+  theme(
+    axis.text.x = element_text(size = 8), # Smaller font size for x-axis
+    axis.text.y = element_text(size = 8), # Smaller font size for y-axis
+    panel.background = element_rect(fill = 'black'),
+    plot.background = element_rect(fill = "black"),
+    legend.text = element_text(color = "#E4EBF7"),  # Set legend text color
+    legend.title = element_text(color = "#E4EBF7"),  
+    
+  ) +
+  labs(fill = "RHOHV")
+
+ggsave("rhohv_median_raster.png", plot = p, width = 10, height = 8, dpi = 300)
+
+
+
+
+raster_stack = np.stack([dbzh_median_raster_masked, vradh_median_raster_masked, rhohv_median_raster_masked], axis=0)
+
+
+
+# Extract values from the median rasters where the cells are valid
+dbzh_values <- values(dbzh_median_raster_masked)
+vradh_values <- values(vradh_median_raster_masked)
+rhohv_values <- values(rhohv_median_raster_masked)
+
+# Create a dataframe with the valid values from DBZH, VRADH, and RHOHV
+valid_values_df <- data.frame(DBZH = dbzh_values, VRADH = vradh_values, RHOHV = rhohv_values)
+valid_values_df = na.omit(valid_values_df)
+colnames(valid_values_df) <- c('DBZH', 'VRADH', 'RHOHV')
+
 valid_indices <- which(count_values >= threshold & !is.na(count_values))
 valid_median_values <- median_values[valid_indices]
-
 
 #plot distribution of values form randomly selected cells
 valid_cells <- which(values(count_raster) >= threshold)
 selected_cell <- sample(valid_cells, 1)
 coords <- xyFromCell(count_raster, cell=selected_cell)
 points <- vect(coords, crs=crs(count_raster))
-selected_cell_values <- terra::extract(stacked_raster, points)
+selected_cell_values <- terra::extract(dbzh_raster, points)
+
+
 
 long_format <- pivot_longer(selected_cell_values, cols = starts_with("lyr"),
                             names_to = "Layer", values_to = "Value")
@@ -414,40 +919,71 @@ dev.off()
 
 
 
-adjusted_raster <- ifel(median_raster > 10, median_raster, NA)
+png(filename = "wss.png")
+plot(1:10, wss, type = "b", xlab = "Number of Clusters", ylab = "Within-Cluster Sum of Squares",
+     main = "Elbow Method for Choosing k")
+dev.off()
+
+k <- 3 # Number of clusters chosen based on the elbow method
+clusters_kmeans <- kmeans(valid_values_df, centers = 2, nstart = 20)
+valid_values_df$cluster <- clusters_kmeans$cluster
+pairs(valid_values_df[, c("DBZH", "VRADH", "RHOHV")], col = valid_values_df$cluster, pch = 20,
+      main = "Pairwise scatter plots with two clusters")
 
 
-count_values <- as.vector(values(count_raster))
-median_values <- as.vector(values(median_raster))
 
-data_for_clustering <- data.frame(Count = count_values, Median = median_values)
-data_for_clustering <- na.omit(data_for_clustering)
-data_for_clustering <- data_for_clustering[!is.infinite(rowSums(data_for_clustering)), ]
+data_scaled <- scale(valid_values_df)
+dist_matrix <- dist(data_scaled, method = "euclidean")
+hc <- hclust(dist_matrix, method = "ward.D2")
 
+plot(hc, hang = -1) 
 
 wss <- numeric(10)
+
+# Perform k-means clustering for different numbers of clusters (from 1 to 10)
 for (k in 1:10) {
-  set.seed(123)
-  clusters <- kmeans(data_for_clustering, centers = k, nstart = 20)
+  set.seed(123)  # Set seed for reproducibility
+  clusters <- kmeans(valid_values_df, centers = k, nstart = 20)
   wss[k] <- clusters$tot.withinss
 }
 
-
+# Plot the WSS for each k to visualize the elbow method
 plot(1:10, wss, type = "b", xlab = "Number of Clusters", ylab = "Within-Cluster Sum of Squares",
      main = "Elbow Method for Choosing k")
 
 
 
-set.seed(123)
-clusters <- kmeans(data_for_clustering, centers = 2)
 
-cluster_assignment <- clusters$cluster
-
-# Optionally, plot the results
-plot(data_for_clustering$Count, data_for_clustering$Median, col = cluster_assignment)
-legend("topright", legend = unique(cluster_assignment), col = 1:3, pch = 1)
+library(factoextra)
 
 
+
+wss <- numeric(10)
+silhouette_scores <- numeric(10)
+
+# Perform k-means clustering and calculate silhouette for different numbers of clusters
+for (k in 2:10) {  # silhouette analysis requires at least 2 clusters to be meaningful
+  set.seed(123)  # Set seed for reproducibility
+  clusters <- kmeans(valid_values_df, centers = k, nstart = 20)
+  ss <- cluster::silhouette(clusters$cluster, dist(valid_values_df))
+  silhouette_scores[k] <- mean(ss[, 3])  # average silhouette width
+}
+
+# Determine the optimal number of clusters based on the highest average silhouette score
+optimal_clusters <- which.max(silhouette_scores)
+
+optimal_clustering <- kmeans(valid_values_df, centers = optimal_clusters, nstart = 20)
+silhouette_plot <- silhouette(optimal_clustering$cluster, dist(valid_values_df))
+fviz_silhouette(silhouette_plot)
+
+
+set.seed(123)  # Ensure reproducibility
+optimal_clusters <- which.max(silhouette_scores)  # Assuming you have computed this from silhouette analysis
+clusters <- kmeans(valid_values_df, centers = optimal_clusters, nstart = 20)
+
+# Plot the data points, color them by cluster assignment
+plot(valid_values_df[,1], valid_values_df[,2], col=clusters$cluster, pch=20, main="K-Means Clustering", xlab="DBZH", ylab="VRADH")
+legend("topright", legend=paste("Cluster", unique(clusters$cluster)), fill=unique(as.numeric(clusters$cluster)), title="Clusters")
 
 
 top_quartile_threshold <- quantile(valid_median_values, 0.75)
@@ -461,8 +997,6 @@ raster_matrix <- matrix(values_with_na, nrow=nrow(median_raster[[1]]), byrow=TRU
 class(raster_matrix) <- c("param", "matrix", "array")
 my_pvol$scans[[1]]$params$DBZH  <- raster_matrix
 attributes(my_pvol$scans[[1]]$params$DBZH) <- attributes(my_proxy_pvol$scans[[1]]$params$DBZH)
-
-
 
 top_quartile_raster_masked_matrix <- matrix(values, nrow=nrow(top_quartile_raster), byrow=TRUE)
 top_quartile_raster_masked_matrix[is.nan(top_quartile_raster_masked_matrix)] <- NA
