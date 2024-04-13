@@ -163,6 +163,8 @@ plot(project_as_ppi(my_occult_scan, range_max = 150000), zlim=c(0,1))
 
 pvol_files = list.files('pvol/KRIW/', full.names = TRUE)
 my_pvol_file = pvol_files[length(pvol_files)-1]
+
+#clean all scans in a pvol with > 0.2 occultation
 my_clean_pvol = clean_pvol(my_pvol_file, my_occult, method='occultation', threshold = 0.2)
 
 
